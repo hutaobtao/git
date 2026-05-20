@@ -1,0 +1,609 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>手势交互粒子球 | Gesture Particle Sphere</title>
+<style>
+  :root { --bg: #000510; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    overflow: hidden;
+    font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    user-select: none; -webkit-user-select: none;
+    height: 100vh; width: 100vw;
+  }
+  #canvas3d { position: fixed; inset: 0; z-index: 1; }
+
+  #video-wrap {
+    position: fixed; bottom: 24px; right: 24px; z-index: 10;
+    width: 160px; height: 120px;
+    border: 2px solid rgba(60,160,255,0.5); border-radius: 12px;
+    overflow: hidden; background: #000;
+    box-shadow: 0 0 24px rgba(30,120,255,0.35);
+  }
+  #video-wrap video {
+    width: 100%; height: 100%; object-fit: cover;
+    transform: scaleX(-1); opacity: 0.85;
+  }
+  #video-wrap .label {
+    position: absolute; top: 4px; left: 8px;
+    font-size: 10px; color: rgba(180,220,255,0.8); pointer-events: none;
+  }
+  #video-wrap .dot {
+    position: absolute; top: 6px; right: 8px;
+    width: 8px; height: 8px; border-radius: 50%;
+    background: #00ff88; box-shadow: 0 0 6px #00ff88;
+    transition: background .3s, box-shadow .3s;
+  }
+  #video-wrap .dot.off { background: #ff4444; box-shadow: 0 0 6px #ff4444; }
+
+  #hud {
+    position: fixed; top: 24px; left: 50%; transform: translateX(-50%); z-index: 10;
+    display: flex; gap: 18px; align-items: center; pointer-events: none;
+  }
+  #hud .chip {
+    padding: 6px 16px; border: 1px solid rgba(60,160,255,0.45); border-radius: 20px;
+    color: rgba(180,220,255,0.9); font-size: 13px; letter-spacing: .04em;
+    backdrop-filter: blur(8px); background: rgba(0,20,60,0.5); white-space: nowrap;
+  }
+  #gesture-label { color: #66ccff; font-weight: 600; min-width: 90px; text-align: center; }
+
+  #hint {
+    position: fixed; bottom: 60px; left: 50%; transform: translateX(-50%); z-index: 10;
+    color: rgba(160,200,240,0.55); font-size: 12px; letter-spacing: .03em;
+    text-align: center; pointer-events: none; transition: opacity .6s;
+  }
+
+  #loading {
+    position: fixed; inset: 0; z-index: 100; background: var(--bg);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 18px; transition: opacity .5s;
+  }
+  #loading.hidden { opacity: 0; pointer-events: none; }
+  #loading .spinner {
+    width: 40px; height: 40px;
+    border: 2px solid rgba(60,160,255,0.3); border-top-color: #66aaff;
+    border-radius: 50%; animation: spin .8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #loading .text { color: rgba(160,200,240,0.8); font-size: 14px; letter-spacing: .05em; }
+
+  /* scanline overlay */
+  #scanlines {
+    position: fixed; inset: 0; z-index: 5; pointer-events: none;
+    background: repeating-linear-gradient(
+      0deg, transparent, transparent 2px, rgba(0,0,0,0.03) 2px, rgba(0,0,0,0.03) 4px
+    );
+  }
+</style>
+</head>
+<body>
+
+<canvas id="canvas3d"></canvas>
+<div id="scanlines"></div>
+
+<div id="video-wrap">
+  <video id="video" autoplay playsinline></video>
+  <span class="label">CAM</span>
+  <span class="dot off" id="cam-dot"></span>
+</div>
+
+<div id="hud">
+  <span class="chip">GESTURE <span id="gesture-label">INIT</span></span>
+  <span class="chip">SCALE <span id="scale-label">1.00</span></span>
+  <span class="chip">LAYER <span id="layer-label">--</span></span>
+</div>
+
+<div id="hint">
+  五指紧握缩小 · 五指张开放大 · 食指划动水平旋转 · 双指划动平面旋转
+</div>
+
+<div id="loading">
+  <div class="spinner"></div>
+  <div class="text">INITIALIZING</div>
+</div>
+
+<script type="importmap">
+{ "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+</script>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1675466862/camera_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js" crossorigin="anonymous"></script>
+
+<script type="module">
+import * as THREE from 'three';
+
+// ═══════════════════════════════════════
+// DOM refs
+// ═══════════════════════════════════════
+const canvas3d   = document.getElementById('canvas3d');
+const video      = document.getElementById('video');
+const camDot     = document.getElementById('cam-dot');
+const gestureEl  = document.getElementById('gesture-label');
+const scaleEl    = document.getElementById('scale-label');
+const layerEl    = document.getElementById('layer-label');
+const hintEl     = document.getElementById('hint');
+const loadingEl  = document.getElementById('loading');
+const loadingTxt = loadingEl.querySelector('.text');
+
+// ═══════════════════════════════════════
+// Three.js setup
+// ═══════════════════════════════════════
+const renderer = new THREE.WebGLRenderer({ canvas: canvas3d, alpha: true, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+
+const scene  = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.05, 60);
+camera.position.set(0, 0.35, 4.8);
+camera.lookAt(0, 0, 0);
+
+// ── starfield ──
+{
+  const geo = new THREE.BufferGeometry();
+  const n = 1200;
+  const p = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) {
+    p[i*3]   = (Math.random() - 0.5) * 28;
+    p[i*3+1] = (Math.random() - 0.5) * 18;
+    p[i*3+2] = -2 - Math.random() * 10;
+  }
+  geo.setAttribute('position', new THREE.BufferAttribute(p, 3));
+  scene.add(new THREE.Points(geo, new THREE.PointsMaterial({
+    color: 0x446688, size: 0.014, blending: THREE.AdditiveBlending, depthWrite: false
+  })));
+}
+
+// ── glow texture factory ──
+function makeGlow(inner, outer) {
+  const s = 128;
+  const c = document.createElement('canvas'); c.width = c.height = s;
+  const ctx = c.getContext('2d');
+  const g = ctx.createRadialGradient(s/2,s/2, 0, s/2,s/2, s/2);
+  g.addColorStop(0, inner);
+  g.addColorStop(0.06, inner);
+  g.addColorStop(0.30, outer);
+  g.addColorStop(0.65, 'rgba(0,15,50,0.08)');
+  g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = g; ctx.fillRect(0,0,s,s);
+  return new THREE.CanvasTexture(c);
+}
+// brighter glow textures — more white at core, less fade
+const texCore   = makeGlow('rgba(255,255,255,1)',   'rgba(160,230,255,0.96)');
+const texBright = makeGlow('rgba(230,255,255,1)',   'rgba(90,195,255,0.84)');
+const texSoft   = makeGlow('rgba(180,230,255,1)',   'rgba(60,165,255,0.64)');
+const texDim    = makeGlow('rgba(130,210,255,1)',   'rgba(45,135,240,0.48)');
+
+// ═══════════════════════════════════════
+// Sphere group
+// ═══════════════════════════════════════
+const sphereGroup = new THREE.Group();
+scene.add(sphereGroup);
+
+// ── fibonacci sphere ──
+function fibSphere(n, radius, jitter = 0.012) {
+  const arr = new Float32Array(n * 3);
+  const phi = Math.PI * (3 - Math.sqrt(5));
+  for (let i = 0; i < n; i++) {
+    const y = 1 - (i / (n - 1)) * 2;
+    const r = Math.sqrt(1 - y * y);
+    const th = phi * i;
+    arr[i*3]   = Math.cos(th) * r * radius + (Math.random() - 0.5) * jitter;
+    arr[i*3+1] = y * radius + (Math.random() - 0.5) * jitter;
+    arr[i*3+2] = Math.sin(th) * r * radius + (Math.random() - 0.5) * jitter;
+  }
+  return arr;
+}
+
+// ── shell ──
+function makeShell(radius, n, tex, color, size, opacity) {
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(fibSphere(n, radius), 3));
+  const mat = new THREE.PointsMaterial({
+    color, size, map: tex, blending: THREE.AdditiveBlending,
+    depthWrite: false, transparent: true, opacity,
+  });
+  return new THREE.Points(geo, mat);
+}
+
+// ── ring ──
+function makeRing(radius, rx, ry, color, opacity) {
+  const seg = 256, pts = [];
+  for (let i = 0; i <= seg; i++) {
+    const a = (i / seg) * Math.PI * 2;
+    pts.push(new THREE.Vector3(Math.cos(a) * radius, 0, Math.sin(a) * radius));
+  }
+  const ring = new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints(pts),
+    new THREE.LineBasicMaterial({ color, transparent: true, opacity,
+      blending: THREE.AdditiveBlending, depthWrite: false })
+  );
+  ring.rotation.set(rx, ry, 0);
+  return ring;
+}
+
+// ═══════════════════════════════════════
+// 10 layers — from dense bright core to faint outer veil
+// ═══════════════════════════════════════
+const shells = [];
+const shellBaseOpacity = [];
+const shellRadii = [];
+[
+  [0.18,  520, texCore,   0xffffff, 0.022, 0.98],  // L0 — blazing core
+  [0.42, 1500, texBright, 0xaaddff, 0.027, 0.92],  // L1
+  [0.62, 2100, texBright, 0x88ccff, 0.026, 0.86],  // L2
+  [0.78, 2600, texSoft,   0x66aaff, 0.025, 0.78],  // L3
+  [0.90, 2800, texSoft,   0x5599ee, 0.023, 0.68],  // L4
+  [1.00, 2400, texSoft,   0x4488dd, 0.021, 0.58],  // L5
+  [1.09, 1800, texDim,    0x3377cc, 0.019, 0.48],  // L6
+  [1.18, 1200, texDim,    0x2266bb, 0.017, 0.38],  // L7
+  [1.27,  700, texDim,    0x1155aa, 0.014, 0.28],  // L8
+  [1.36,  380, texDim,    0x114499, 0.012, 0.18],  // L9 — outermost wisp
+].forEach(([r, n, tex, col, sz, op]) => {
+  const s = makeShell(r, n, tex, col, sz, op);
+  sphereGroup.add(s);
+  shells.push(s);
+  shellBaseOpacity.push(op);
+  shellRadii.push(r);
+});
+
+// ── rings ──
+const rings = [
+  makeRing(1.35,  0.4, 0,       0x5599dd, 0.35),
+  makeRing(1.35, -0.35, 0.5,    0x77bbff, 0.30),
+  makeRing(1.35, Math.PI/2, 0,  0x5599dd, 0.25),
+  makeRing(1.10,  0, 0,         0x6699cc, 0.40),
+  makeRing(1.10,  1.1, -0.3,    0x77bbcc, 0.30),
+  makeRing(1.22,  0.7, 0.8,     0x6699cc, 0.28),
+];
+rings.forEach(r => sphereGroup.add(r));
+
+// ── axis guides ──
+for (let ax = 0; ax < 3; ax++) {
+  const pts = [];
+  for (let i = 0; i <= 100; i++) {
+    const t = (i / 100) * 2.8 - 1.4;
+    const v = new THREE.Vector3();
+    if (ax === 0) v.set(t, 0, 0); else if (ax === 1) v.set(0, t, 0); else v.set(0, 0, t);
+    pts.push(v);
+  }
+  sphereGroup.add(new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints(pts),
+    new THREE.LineBasicMaterial({ color: 0x446688, transparent: true, opacity: 0.18,
+      blending: THREE.AdditiveBlending, depthWrite: false })
+  ));
+}
+
+// ═══════════════════════════════════════
+// Gesture state
+// ═══════════════════════════════════════
+const S = {
+  mode: 'idle',
+  openness: 0.5,
+  smoothOpenness: 0.5,
+  targetScale: 1.0,
+  smoothScale: 1.0,
+  rotY: 0, rotZ: 0,
+  targetRotY: 0, targetRotZ: 0,
+  // palm-relative index finger x (for rotation)
+  indexRel: 0, prevIndexRel: 0,
+  handPresent: false,
+  modeCandidate: 'idle',
+  modeCounter: 0,
+  modeThreshold: 5,
+};
+
+// ═══════════════════════════════════════
+// Gesture detection
+// ═══════════════════════════════════════
+function dist3(a, b) { return Math.sqrt((a.x-b.x)**2 + (a.y-b.y)**2 + (a.z-b.z)**2); }
+
+function palmCenter(lm) {
+  return {
+    x: (lm[0].x + lm[5].x + lm[9].x + lm[13].x + lm[17].x) / 5,
+    y: (lm[0].y + lm[5].y + lm[9].y + lm[13].y + lm[17].y) / 5,
+    z: (lm[0].z + lm[5].z + lm[9].z + lm[13].z + lm[17].z) / 5,
+  };
+}
+
+function fingerUp(lm, tip, pip, palm) {
+  return dist3(lm[tip], palm) > dist3(lm[pip], palm) * 1.1;
+}
+
+function detectGesture(lm) {
+  const palm = palmCenter(lm);
+  const idxUp = fingerUp(lm, 8, 6, palm);
+  const midUp = fingerUp(lm, 12, 10, palm);
+  const rngUp = fingerUp(lm, 16, 14, palm);
+  const pnkUp = fingerUp(lm, 20, 18, palm);
+  const thbUp = fingerUp(lm, 4, 3, palm);
+  const extCount = [idxUp, midUp, rngUp, pnkUp, thbUp].filter(Boolean).length;
+
+  let avgDist = 0;
+  [4,8,12,16,20].forEach(i => { avgDist += dist3(lm[i], palm); });
+  avgDist /= 5;
+  const openness = Math.max(0, Math.min(1, (avgDist - 0.09) / 0.28));
+
+  // palm-relative index tip x — only finger swinging relative to palm creates rotation
+  const indexRelX = lm[8].x - palm.x;
+
+  let mode = 'idle';
+  if (extCount <= 1 && openness < 0.25) {
+    mode = 'fist';
+  } else if (extCount >= 4 && openness > 0.50) {
+    mode = 'open';
+  } else if (idxUp && !midUp && !rngUp && !pnkUp) {
+    mode = 'single';
+  } else if (idxUp && (thbUp || midUp) && !rngUp && !pnkUp) {
+    mode = 'double';
+  }
+
+  return { mode, openness, indexRelX, palm };
+}
+
+// ═══════════════════════════════════════
+// Animation loop
+// ═══════════════════════════════════════
+const clock = new THREE.Clock();
+let timeAcc = 0;
+
+// scale range: fist (0.0) = zoomed out near layer 9; open (1.0) = deep inside near layer 4
+const SCALE_MIN = 3.2;
+const SCALE_MAX = 5.4;
+
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.12);
+  timeAcc += dt;
+
+  // ── scale from openness ──
+  S.targetScale = SCALE_MIN + S.openness * (SCALE_MAX - SCALE_MIN);
+  S.smoothOpenness += (S.openness - S.smoothOpenness) * Math.min(dt * 7, 1);
+  S.smoothScale    += (S.targetScale - S.smoothScale)    * Math.min(dt * 4.5, 1);
+
+  // ── rotation from palm-relative finger swing ──
+  if (S.handPresent && (S.mode === 'single' || S.mode === 'double')) {
+    const dx = S.indexRel - S.prevIndexRel;
+    const rotInput = dx * 10;
+    if (S.mode === 'single') {
+      S.targetRotY -= rotInput;
+    } else {
+      S.targetRotZ += rotInput;
+    }
+  }
+
+  // decay target rotation
+  const decay = Math.pow(0.0005, dt);
+  S.targetRotY *= decay;
+  S.targetRotZ *= decay;
+
+  // smooth rotation
+  const smooth = 0.18;
+  S.rotY += (S.targetRotY - S.rotY) * smooth;
+  S.rotZ += (S.targetRotZ - S.rotZ) * smooth;
+
+  // ── apply ──
+  sphereGroup.scale.setScalar(S.smoothScale);
+  sphereGroup.rotation.y = S.rotY;
+  sphereGroup.rotation.z = S.rotZ;
+
+  // ambient idle spin
+  if (S.mode === 'idle' && !mouseDown) {
+    sphereGroup.rotation.y += dt * 0.12;
+  }
+
+  // ── shell independent animation ──
+  shells.forEach((s, i) => {
+    const spd = (i % 2 === 0 ? 1 : -1) * (0.07 + i * 0.025);
+    s.rotation.y += dt * spd;
+    s.rotation.x += dt * spd * 0.35;
+    s.material.opacity = shellBaseOpacity[i] * (0.80 + S.smoothOpenness * 0.20);
+  });
+
+  // ── ring animation ──
+  rings.forEach((r, i) => {
+    r.rotation.z += dt * (0.08 + i * 0.035) * (i % 2 ? 1 : -1);
+    r.material.opacity = 0.18 + S.smoothOpenness * 0.22;
+  });
+
+  // ── HUD ──
+  const names = { idle: 'IDLE', fist: 'FIST', open: 'OPEN', single: 'INDEX', double: 'DUAL' };
+  gestureEl.textContent = names[S.mode] || '--';
+  scaleEl.textContent = (S.smoothScale).toFixed(2);
+
+  // show which layer the camera is near
+  const camDist = camera.position.length();
+  let nearestLayer = '--';
+  let minDiff = Infinity;
+  shellRadii.forEach((r, i) => {
+    const effectiveR = r * S.smoothScale;
+    const diff = Math.abs(camDist - effectiveR);
+    if (diff < minDiff) { minDiff = diff; nearestLayer = 'L' + i; }
+  });
+  layerEl.textContent = nearestLayer;
+
+  // ── hint fade ──
+  const hintTarget = (S.handPresent && S.mode !== 'idle') ? 0 : 1;
+  hintEl.style.opacity = Math.max(0, Math.min(1,
+    parseFloat(hintEl.style.opacity || '1') + (hintTarget > 0.5 ? dt * 1.8 : -dt * 2.5)
+  ));
+
+  renderer.render(scene, camera);
+}
+
+// ═══════════════════════════════════════
+// Mouse fallback
+// ═══════════════════════════════════════
+let mouseDown = false, mousePrevX = 0, mouseMode = 'single';
+window.addEventListener('mousedown', e => {
+  mouseDown = true; mousePrevX = e.clientX;
+  mouseMode = e.shiftKey ? 'double' : 'single';
+  S.mode = mouseMode; S.handPresent = true;
+});
+window.addEventListener('mouseup', () => { mouseDown = false; S.mode = 'idle'; S.handPresent = false; });
+window.addEventListener('mousemove', e => {
+  if (!mouseDown) return;
+  const dx = (e.clientX - mousePrevX) / window.innerWidth;
+  mousePrevX = e.clientX;
+  S.prevIndexRel = S.indexRel;
+  S.indexRel += dx;
+  S.mode = mouseMode; S.handPresent = true;
+});
+window.addEventListener('wheel', e => {
+  e.preventDefault();
+  S.openness = Math.max(0, Math.min(1, S.openness - e.deltaY * 0.0012));
+}, { passive: false });
+
+// touch support
+let touchActive = false, touchPrevX = 0, touchMode = 'single';
+window.addEventListener('touchstart', e => {
+  if (e.touches.length === 1) {
+    touchActive = true; touchPrevX = e.touches[0].clientX;
+    touchMode = 'single'; S.mode = 'single'; S.handPresent = true;
+  } else if (e.touches.length === 2) {
+    touchActive = true; touchPrevX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+    touchMode = 'double'; S.mode = 'double'; S.handPresent = true;
+  }
+});
+window.addEventListener('touchmove', e => {
+  if (!touchActive) return;
+  let cx;
+  if (e.touches.length === 1) cx = e.touches[0].clientX;
+  else if (e.touches.length === 2) cx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+  else return;
+  const dx = (cx - touchPrevX) / window.innerWidth;
+  touchPrevX = cx;
+  S.prevIndexRel = S.indexRel;
+  S.indexRel += dx;
+  S.mode = touchMode; S.handPresent = true;
+});
+window.addEventListener('touchend', () => {
+  touchActive = false; S.mode = 'idle'; S.handPresent = false;
+});
+
+// ═══════════════════════════════════════
+// Camera & MediaPipe setup
+// ═══════════════════════════════════════
+let handsInstance = null;
+let cameraUtils = null;
+
+function setupMediaPipe() {
+  const _Hands = window.Hands;
+  const _Camera = window.Camera;
+
+  if (!_Hands || !_Camera) return false;
+
+  handsInstance = new _Hands({
+    locateFile: (file) =>
+      `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/${file}`
+  });
+  handsInstance.setOptions({
+    maxNumHands: 1,
+    modelComplexity: 1,
+    minDetectionConfidence: 0.7,
+    minTrackingConfidence: 0.5,
+  });
+
+  handsInstance.onResults(results => {
+    if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+      const gest = detectGesture(results.multiHandLandmarks[0]);
+
+      // hysteresis for mode switching to reduce flicker
+      if (gest.mode !== S.modeCandidate) {
+        S.modeCandidate = gest.mode;
+        S.modeCounter = 1;
+      } else {
+        S.modeCounter++;
+        if (S.modeCounter >= S.modeThreshold) {
+          S.mode = S.modeCandidate;
+        }
+      }
+
+      S.handPresent = true;
+      S.openness = gest.openness;
+      // use palm-relative index position — only finger swing relative to palm drives rotation
+      S.prevIndexRel = S.indexRel;
+      S.indexRel = gest.indexRelX;
+
+      camDot.classList.remove('off');
+    } else {
+      S.handPresent = false;
+      S.modeCandidate = 'idle';
+      S.modeCounter = 0;
+      camDot.classList.add('off');
+    }
+  });
+
+  cameraUtils = _Camera;
+  return true;
+}
+
+async function startCamera() {
+  if (!setupMediaPipe()) return false;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: 640, height: 480, facingMode: 'user' }
+    });
+    video.srcObject = stream;
+    await video.play();
+
+    const cam = new cameraUtils(video, {
+      onFrame: async () => { await handsInstance.send({ image: video }); },
+      width: 640, height: 480,
+    });
+    cam.start();
+    return true;
+  } catch (e) {
+    console.warn('Camera unavailable:', e.message);
+    return false;
+  }
+}
+
+// ═══════════════════════════════════════
+// Boot
+// ═══════════════════════════════════════
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// start animation immediately
+animate();
+
+async function boot() {
+  const camOk = await startCamera();
+  if (!camOk) {
+    loadingTxt.textContent = 'CAMERA UNAVAILABLE — mouse / touch fallback active';
+    camDot.classList.add('off');
+  }
+  loadingEl.classList.add('hidden');
+  setTimeout(() => loadingEl.remove(), 700);
+}
+
+function tryBoot() {
+  if (window.Hands && window.Camera) {
+    boot();
+  } else {
+    let tries = 0;
+    const poll = setInterval(() => {
+      tries++;
+      if (window.Hands && window.Camera) {
+        clearInterval(poll);
+        boot();
+      } else if (tries >= 60) {
+        clearInterval(poll);
+        loadingTxt.textContent = 'MEDIAPIPE LOAD FAILED — mouse / touch fallback active';
+        loadingEl.classList.add('hidden');
+        setTimeout(() => loadingEl.remove(), 700);
+      }
+    }, 250);
+  }
+}
+
+setTimeout(tryBoot, 300);
+</script>
+</body>
+</html>
