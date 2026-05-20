@@ -152,29 +152,29 @@ camera.lookAt(0, 0, 0);
   }
   geo.setAttribute('position', new THREE.BufferAttribute(p, 3));
   scene.add(new THREE.Points(geo, new THREE.PointsMaterial({
-    color: 0x446688, size: 0.014, blending: THREE.AdditiveBlending, depthWrite: false
+    color: 0x5577aa, size: 0.02, blending: THREE.AdditiveBlending, depthWrite: false
   })));
 }
 
 // ── glow texture factory ──
-function makeGlow(inner, outer) {
+function makeGlow(inner, outer, outerStop = 0.45) {
   const s = 128;
   const c = document.createElement('canvas'); c.width = c.height = s;
   const ctx = c.getContext('2d');
   const g = ctx.createRadialGradient(s/2,s/2, 0, s/2,s/2, s/2);
   g.addColorStop(0, inner);
-  g.addColorStop(0.06, inner);
-  g.addColorStop(0.30, outer);
-  g.addColorStop(0.65, 'rgba(0,15,50,0.08)');
+  g.addColorStop(0.04, inner);
+  g.addColorStop(outerStop, outer);
+  g.addColorStop(0.72, 'rgba(0,20,60,0.10)');
   g.addColorStop(1, 'rgba(0,0,0,0)');
   ctx.fillStyle = g; ctx.fillRect(0,0,s,s);
   return new THREE.CanvasTexture(c);
 }
-// brighter glow textures — more white at core, less fade
-const texCore   = makeGlow('rgba(255,255,255,1)',   'rgba(160,230,255,0.96)');
-const texBright = makeGlow('rgba(230,255,255,1)',   'rgba(90,195,255,0.84)');
-const texSoft   = makeGlow('rgba(180,230,255,1)',   'rgba(60,165,255,0.64)');
-const texDim    = makeGlow('rgba(130,210,255,1)',   'rgba(45,135,240,0.48)');
+// high-intensity glow textures — wide bright core, slow fade
+const texCore   = makeGlow('rgba(255,255,255,1)',   'rgba(200,245,255,0.98)', 0.50);
+const texBright = makeGlow('rgba(245,255,255,1)',   'rgba(120,210,255,0.90)', 0.48);
+const texSoft   = makeGlow('rgba(200,240,255,1)',   'rgba(80,180,255,0.78)',  0.42);
+const texDim    = makeGlow('rgba(150,220,255,1)',   'rgba(55,150,240,0.60)',  0.36);
 
 // ═══════════════════════════════════════
 // Sphere group
@@ -225,22 +225,23 @@ function makeRing(radius, rx, ry, color, opacity) {
 }
 
 // ═══════════════════════════════════════
-// 10 layers — from dense bright core to faint outer veil
+// 10 layers — dense enough so gaps ≈ 1 particle width
+// surface area 4πr², gap=particle_size → N ≈ πr² / size²
 // ═══════════════════════════════════════
 const shells = [];
 const shellBaseOpacity = [];
 const shellRadii = [];
 [
-  [0.18,  520, texCore,   0xffffff, 0.022, 0.98],  // L0 — blazing core
-  [0.42, 1500, texBright, 0xaaddff, 0.027, 0.92],  // L1
-  [0.62, 2100, texBright, 0x88ccff, 0.026, 0.86],  // L2
-  [0.78, 2600, texSoft,   0x66aaff, 0.025, 0.78],  // L3
-  [0.90, 2800, texSoft,   0x5599ee, 0.023, 0.68],  // L4
-  [1.00, 2400, texSoft,   0x4488dd, 0.021, 0.58],  // L5
-  [1.09, 1800, texDim,    0x3377cc, 0.019, 0.48],  // L6
-  [1.18, 1200, texDim,    0x2266bb, 0.017, 0.38],  // L7
-  [1.27,  700, texDim,    0x1155aa, 0.014, 0.28],  // L8
-  [1.36,  380, texDim,    0x114499, 0.012, 0.18],  // L9 — outermost wisp
+  [0.18,   280, texCore,   0xffffff, 0.065, 1.00],  // L0 — blazing core
+  [0.42,  1000, texBright, 0xddeeff, 0.060, 0.96],  // L1
+  [0.62,  2200, texBright, 0xbbddff, 0.056, 0.92],  // L2
+  [0.78,  3500, texSoft,   0x99ccff, 0.052, 0.86],  // L3
+  [0.90,  5000, texSoft,   0x88bbee, 0.048, 0.78],  // L4
+  [1.00,  6500, texSoft,   0x77aadd, 0.046, 0.68],  // L5
+  [1.09,  7000, texDim,    0x6699cc, 0.043, 0.58],  // L6
+  [1.18,  7000, texDim,    0x5588bb, 0.040, 0.48],  // L7
+  [1.27,  6500, texDim,    0x4477aa, 0.037, 0.38],  // L8
+  [1.36,  5500, texDim,    0x336699, 0.034, 0.28],  // L9 — outer veil
 ].forEach(([r, n, tex, col, sz, op]) => {
   const s = makeShell(r, n, tex, col, sz, op);
   sphereGroup.add(s);
@@ -251,12 +252,12 @@ const shellRadii = [];
 
 // ── rings ──
 const rings = [
-  makeRing(1.35,  0.4, 0,       0x5599dd, 0.35),
-  makeRing(1.35, -0.35, 0.5,    0x77bbff, 0.30),
-  makeRing(1.35, Math.PI/2, 0,  0x5599dd, 0.25),
-  makeRing(1.10,  0, 0,         0x6699cc, 0.40),
-  makeRing(1.10,  1.1, -0.3,    0x77bbcc, 0.30),
-  makeRing(1.22,  0.7, 0.8,     0x6699cc, 0.28),
+  makeRing(1.35,  0.4, 0,       0x77bbee, 0.50),
+  makeRing(1.35, -0.35, 0.5,    0x88ccff, 0.45),
+  makeRing(1.35, Math.PI/2, 0,  0x77bbee, 0.40),
+  makeRing(1.10,  0, 0,         0x88bbdd, 0.55),
+  makeRing(1.10,  1.1, -0.3,    0x99ccdd, 0.45),
+  makeRing(1.22,  0.7, 0.8,     0x88aadd, 0.42),
 ];
 rings.forEach(r => sphereGroup.add(r));
 
@@ -292,7 +293,7 @@ const S = {
   handPresent: false,
   modeCandidate: 'idle',
   modeCounter: 0,
-  modeThreshold: 5,
+  modeThreshold: 8,
 };
 
 // ═══════════════════════════════════════
@@ -366,7 +367,7 @@ function animate() {
   // ── rotation from palm-relative finger swing ──
   if (S.handPresent && (S.mode === 'single' || S.mode === 'double')) {
     const dx = S.indexRel - S.prevIndexRel;
-    const rotInput = dx * 10;
+    const rotInput = dx * 15;
     if (S.mode === 'single') {
       S.targetRotY -= rotInput;
     } else {
@@ -374,10 +375,13 @@ function animate() {
     }
   }
 
-  // decay target rotation
-  const decay = Math.pow(0.0005, dt);
-  S.targetRotY *= decay;
-  S.targetRotZ *= decay;
+  // decay target rotation — only when NOT actively gesturing
+  const inGesture = S.handPresent && (S.mode === 'single' || S.mode === 'double');
+  if (!inGesture) {
+    const decay = Math.pow(0.08, dt);
+    S.targetRotY *= decay;
+    S.targetRotZ *= decay;
+  }
 
   // smooth rotation
   const smooth = 0.18;
@@ -399,7 +403,7 @@ function animate() {
     const spd = (i % 2 === 0 ? 1 : -1) * (0.07 + i * 0.025);
     s.rotation.y += dt * spd;
     s.rotation.x += dt * spd * 0.35;
-    s.material.opacity = shellBaseOpacity[i] * (0.80 + S.smoothOpenness * 0.20);
+    s.material.opacity = shellBaseOpacity[i] * (0.90 + S.smoothOpenness * 0.10);
   });
 
   // ── ring animation ──
